@@ -1,0 +1,7 @@
+tmax_yr = 2000
+dt_output_yr = 10
+initial_planet_mass = 3e-6
+initial_planet_mass_ratio = 1
+initial_n_planet = 4
+initial_a_ratio = 1.2
+initial_a = 1
