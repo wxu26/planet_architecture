@@ -8,20 +8,25 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <time.h>
 #include "rebound.h"
 
-// global variables: to be set by input later
-const double tmax = 1.e5*2.*M_PI;
-const double dt_output = tmax/1000.;
+const char input_name[] = "sim.in";
 const char output_name[] = "sim.out";
 
-const double initial_planet_mass = 3e-6;
-const int initial_n_planet = 4;
-const double initial_a_ratio = 1.2; // initial semimajor axes ratios: a_{i+1} / a_i
-const double initial_a = 1.; // initial semimajor axis of innermost planet
+// these variables can be updated by the input file
+double tmax_yr = 1.e5;
+double dt_output_yr = 1.e2;
+double initial_planet_mass = 3e-6; // initial mass of innermost planet
+double initial_planet_mass_ratio = 1.; // initial planet mass ratios: m_{i+1} / m_i
+int initial_n_planet = 4;
+double initial_a = 1.; // initial semimajor axis of innermost planet
+double initial_a_ratio = 1.2; // initial semimajor axes ratios: a_{i+1} / a_i
 
+// disk properties
+// these numbers follow Liu et al.
 const double Mdot_0_Msunyr = 1.e-8;
 const double alpha = 0.01;
 const double tau_d_yr = 1.e5;
@@ -32,19 +37,18 @@ const double Msun_in_g = 1.9891e33;
 const double au_in_cm = 1.49597871e13;
 const double G = 1.;
 
-const double M = 1.;
+const double M = 1.; // stellar mass
 
 double mass_to_radius(const double m){
-    // just scale by earth values for now...
+    // CAVEAT: we just scale by earth values for now...
     double r = pow(m/3.e-6, 1./3.)*4.26e-04;
     return r;
 }
 
 int collision(struct reb_simulation* const sim, struct reb_collision c){
-    printf("collision happened!\n");
+    printf("\rcollision happened at t = %.2f                                            \n", sim->t);
     struct reb_particle* particles = sim->particles;
     double m = particles[c.p1].m+particles[c.p2].m;
-    double r3 = pow(particles[c.p1].r,3)+pow(particles[c.p2].r,3);
     double px = particles[c.p1].m*particles[c.p1].vx+particles[c.p2].m*particles[c.p2].vx;
     double py = particles[c.p1].m*particles[c.p1].vy+particles[c.p2].m*particles[c.p2].vy;
     double pz = particles[c.p1].m*particles[c.p1].vz+particles[c.p2].m*particles[c.p2].vz;
@@ -83,6 +87,7 @@ void migration(struct reb_simulation* const sim){
         double r_c = 0.1 * pow(Mdot_Msunyr/1.e-9, -2./7.) * pow(B_kG,4./7.); // truncation radius
         if (a<r_c) Sigma = 1.e-40;
         double beta = 0.5; // surface density slope, Sigma ~ r^-beta
+        double beta_T = 1; // temperature slope, T ~ r^-beta_T
         double h = h0;
 
         // migration following Cresswell & Nelson
@@ -94,9 +99,25 @@ void migration(struct reb_simulation* const sim){
         double t_m_inv=1./t_m;
         double t_e_inv=1./t_e;
         double t_I_inv=1./t_I;
+        // CAVEAT: e and I dependence are not implemented
 
         // update t_m_inv following Liu et al.
+        // normalized torque = torque / m r^2 Omega^2
+        // 2 * normalized torque * Omega = dadt/a = 2/tm
+        // 1/tm = normalized torque * Omega
+        double qp = m/M;
+        double qd = Sigma*a*a/M;
+        double normalized_torque_2s = (-(2.5+0.5*beta_T+0.1*beta)+1.4*beta_T+1.1*(1.5+beta))*qd*qp/(h*h);
+        double normalized_torque_1s = -0.65*qd*qp/(h*h*h) + 2.46*qd*sqrt(qp/(h*h*h))*exp(-e/(.5*h+0.01));
+        double x_hs = 1.7*sqrt(qp/h)*a;
+        double normalized_torque = 0.;
+        if (a>r_c) {
+            double f = exp(-(a-r_c)/x_hs);
+            normalized_torque = f*normalized_torque_1s + (1-f)*normalized_torque_2s;
+        }
+        t_m_inv = normalized_torque * Omega;
         
+        // apply force to planet
         double rsq = p->x*p->x + p->y*p->y + p->z*p->z;
         double v_dot_r = p->x*p->vx + p->y*p->vy + p->z*p->vz;
         double q = p->m/p0->m;
@@ -107,16 +128,36 @@ void migration(struct reb_simulation* const sim){
         p0->ax += p->vx*t_m_inv*q;
         p0->ay += p->vy*t_m_inv*q;
         p0->az += p->vz*t_m_inv*q;
-        p->ax += -2*u*p->x*t_e_inv;
-        p->ay += -2*u*p->y*t_e_inv;
-        p->az += -2*u*p->z*t_e_inv;
-        p0->ax += 2*u*p->x*t_e_inv*q;
-        p0->ay += 2*u*p->y*t_e_inv*q;
-        p0->az += 2*u*p->z*t_e_inv*q;
+        p->ax += -2.*u*p->x*t_e_inv;
+        p->ay += -2.*u*p->y*t_e_inv;
+        p->az += -2.*u*p->z*t_e_inv;
+        p0->ax += 2.*u*p->x*t_e_inv*q;
+        p0->ay += 2.*u*p->y*t_e_inv*q;
+        p0->az += 2.*u*p->z*t_e_inv*q;
+        // CAVEAT: no inclination damping now
     }
 }
 
-int main(){
+int main(int argc, char *argv[]){
+    // parse input file
+    FILE *input_file = fopen(input_name, "r");
+    if (input_file == NULL) {
+        perror("Could not open input file! Check if sim.in exists.");
+        exit(EXIT_FAILURE);
+    }
+    char line[256];
+    char key[256];
+    double value;
+    while (fgets(line, sizeof(line), input_file)) {
+        if (sscanf(line, "%s = %lf", key, &value) == 2 && strcmp(key, "tmax_yr") == 0) tmax_yr = value;
+        if (sscanf(line, "%s = %lf", key, &value) == 2 && strcmp(key, "dt_output_yr") == 0) dt_output_yr = value;
+        if (sscanf(line, "%s = %lf", key, &value) == 2 && strcmp(key, "initial_planet_mass") == 0) initial_planet_mass = value;
+        if (sscanf(line, "%s = %lf", key, &value) == 2 && strcmp(key, "initial_planet_mass_ratio") == 0) initial_planet_mass_ratio = value;
+        if (sscanf(line, "%s = %lf", key, &value) == 2 && strcmp(key, "initial_n_planet") == 0) initial_n_planet = value;
+        if (sscanf(line, "%s = %lf", key, &value) == 2 && strcmp(key, "initial_a_ratio") == 0) initial_a_ratio = value;
+        if (sscanf(line, "%s = %lf", key, &value) == 2 && strcmp(key, "initial_a") == 0) initial_a = value;
+    }
+    fclose(input_file);
     // initialize simulation
     struct reb_simulation* sim = reb_simulation_create();
     // integrator
@@ -141,6 +182,7 @@ int main(){
         reb_simulation_add(sim,plt);
         // for next planet
         a *= initial_a_ratio;
+        m *= initial_planet_mass_ratio;
         f += 1.; // just separate adjacent planets by 1 rad initially
     }
     // add migration force
@@ -157,6 +199,8 @@ int main(){
     // run simulation and save outputs
     double t_start = clock();
     int tid=0; // time id
+    double tmax = tmax_yr*2.*M_PI;
+    double dt_output = dt_output_yr*2.*M_PI;
     while (sim->t<tmax) {
         // integrate
         reb_simulation_integrate(sim, sim->t + dt_output);
@@ -179,7 +223,11 @@ int main(){
             fprintf(output_file, "%d, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f\n", pid, tid, t, m, r_p, a, e, inc, Omega, omega, f);
         }
         fclose(output_file);
+        // print progress
+        double t_current = clock();
+        printf("\rt = %.2f, tmax = %.2f, progress = %.2f%%, %.2f seconds taken", sim->t, tmax, sim->t/tmax*100., (t_current-t_start)/CLOCKS_PER_SEC);
+        fflush(stdout);
     }
     double t_end = clock();
-    printf("simulation took %f seconds\n",(t_end-t_start)/CLOCKS_PER_SEC);
+    printf("\nsimulation took %f seconds\n",(t_end-t_start)/CLOCKS_PER_SEC);
 }
