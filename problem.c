@@ -185,6 +185,7 @@ int main(int argc, char *argv[]){
         m *= initial_planet_mass_ratio;
         f += 1.; // just separate adjacent planets by 1 rad initially
     }
+    reb_simulation_move_to_com(sim);
     // add migration force
     sim->additional_forces = migration;
     sim->force_is_velocity_dependent = 1;
