@@ -41,7 +41,7 @@ const double M = 1.; // stellar mass
 
 double mass_to_radius(const double m){
     // CAVEAT: we just scale by earth values for now...
-    double r = pow(m/3.e-6, 1./3.)*4.26e-04;
+    double r = pow(m/3.e-6, 1./3.)*4.26e-05;
     return r;
 }
 
